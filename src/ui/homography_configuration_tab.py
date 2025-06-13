@@ -1,16 +1,59 @@
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QLabel, QFormLayout, QLineEdit, QFrame, QSpinBox
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtCore import Qt, Signal, QPoint, QPointF
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont
+
+
+class ClickableLabel(QLabel):
+    pointModified = Signal(int, QPoint) # point_global_idx, new_pos
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.points_data = []
+        self.pixmap_size = QPoint(0,0)
+
+    def set_points_data(self, points):
+        self.points_data = points
+
+    def set_pixmap_size(self, size):
+        self.pixmap_size = size
+
+    def mousePressEvent(self, event):
+        if not self.pixmap(): return
+        
+        widget_pos = event.pos()
+        pixmap_w, pixmap_h = self.pixmap_size.x(), self.pixmap_size.y()
+        if pixmap_w == 0 or pixmap_h == 0: return
+
+        scaled_pixmap = self.pixmap().scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        offset_x = (self.width() - scaled_pixmap.width()) / 2
+        offset_y = (self.height() - scaled_pixmap.height()) / 2
+        img_x = (widget_pos.x() - offset_x) * pixmap_w / scaled_pixmap.width()
+        img_y = (widget_pos.y() - offset_y) * pixmap_h / scaled_pixmap.height()
+        click_pos = QPoint(int(img_x), int(img_y))
+
+        min_dist = float('inf')
+        closest_point_idx = -1
+        for i, point in enumerate(self.points_data):
+            dist = (click_pos - point).manhattanLength()
+            if dist < min_dist and dist < 1000:
+                min_dist = dist
+                closest_point_idx = i
+        
+        if closest_point_idx != -1:
+            self.pointModified.emit(closest_point_idx, click_pos)
+
 
 class HomographyConfigurationTab(QWidget):
     configChanged = Signal(bool)
     
     def __init__(self):
         super().__init__()
-        self.homography_inputs = [] # save: SpinBoxes & QLineEdits
-        self.coord_spinboxes = []   # only coordenates
+        self.all_inputs = []
+        self.coord_spinboxes = []
+        self.distance_lineedits = []
         self.frame_width = 0
         self.frame_height = 0
+        self.base_pixmap = None
         
         main_layout = QHBoxLayout(self)
         
@@ -39,7 +82,8 @@ class HomographyConfigurationTab(QWidget):
         preview_label = QLabel("Aquí se mostrarán los puntos:<br><span style='color:red;'>● Puntos Verticales</span><br><span style='color:blue;'>● Puntos Horizontales</span>")
         preview_label.setAlignment(Qt.AlignTop)
         
-        self.preview_area = QLabel()
+        self.preview_area = ClickableLabel()
+        self.preview_area.pointModified.connect(self.update_point_from_click)
         self.preview_area.setFrameShape(QFrame.Box)
         self.preview_area.setMinimumSize(1280, 720)
         self.preview_area.setStyleSheet("background-color: black; color: white;")
@@ -60,8 +104,10 @@ class HomographyConfigurationTab(QWidget):
             
             # Campo de distancia con QLineEdit
             dist_input = QLineEdit()
-            dist_input.textChanged.connect(self.validate_config)
-            self.homography_inputs.append(dist_input)
+            dist_input.setPlaceholderText("e.g., 5.5")
+            dist_input.textChanged.connect(self.redraw_lines)
+            self.all_inputs.append(dist_input)
+            self.distance_lineedits.append(dist_input)
             form_layout.addRow(f"Distancia Real {i+1} (m):", dist_input)
             
     def _create_coord_spinboxes(self):
@@ -76,12 +122,64 @@ class HomographyConfigurationTab(QWidget):
         coord_layout.addWidget(y_spin)
         
         self.coord_spinboxes.extend([x_spin, y_spin])
-        self.homography_inputs.extend([x_spin, y_spin])
+        self.all_inputs.extend([x_spin, y_spin])
         
         x_spin.valueChanged.connect(self.validate_config)
         y_spin.valueChanged.connect(self.validate_config)
         
         return coord_layout
+    
+    def get_all_points(self):
+        """Get all lane points as a list of lists."""
+        points = []
+        for i in range(0, len(self.coord_spinboxes), 2):
+            x = self.coord_spinboxes[i].value()
+            y = self.coord_spinboxes[i+1].value()
+            points.append(QPoint(x,y))
+        return points
+    
+    def redraw_lines(self):
+        if not self.base_pixmap: return
+
+        pixmap_to_draw = self.base_pixmap.copy()
+        painter = QPainter(pixmap_to_draw)
+        font = QFont()
+        font.setPointSize(14)
+        font.setBold(True)
+        painter.setFont(font)
+        
+        all_points = self.get_all_points()
+        self.preview_area.set_points_data(all_points)
+
+        # 4 pares de puntos en total (8 puntos)
+        for i in range(4):
+            p1_idx = i * 2
+            p2_idx = i * 2 + 1
+            
+            p1 = all_points[p1_idx]
+            p2 = all_points[p2_idx]
+            
+            is_vertical_group = i < 2 # Los primeros 2 pares son verticales
+            color = Qt.red if is_vertical_group else Qt.blue
+            
+            pen = QPen(color, 3)
+            painter.setPen(pen)
+            painter.setBrush(Qt.white)
+            
+            # Dibujar línea y puntos
+            painter.drawLine(p1, p2)
+            painter.drawEllipse(p1, 6, 6)
+            painter.drawEllipse(p2, 6, 6)
+            
+            # Dibujar texto de distancia
+            dist_text = self.distance_lineedits[i].text() + " m"
+            mid_point = (p1 + p2) / 2
+            painter.setPen(Qt.white)
+            painter.drawText(mid_point.x() + 10, mid_point.y(), dist_text)
+
+        painter.end()
+        self.preview_area.setPixmap(pixmap_to_draw.scaled(self.preview_area.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.validate_config()
     
     def update_spinbox_limits(self):
         for i, spinbox in enumerate(self.coord_spinboxes):
@@ -91,9 +189,9 @@ class HomographyConfigurationTab(QWidget):
     def validate_config(self):
         """check inputs."""
         all_filled = all(
-            (isinstance(w, QSpinBox) and w.value() >= 0) or \
+            (isinstance(w, QSpinBox)) or 
             (isinstance(w, QLineEdit) and w.text().strip() != "")
-            for w in self.homography_inputs
+            for w in self.all_inputs
         )
         is_valid = all_filled and self.frame_width > 0
         self.configChanged.emit(is_valid)
@@ -102,9 +200,23 @@ class HomographyConfigurationTab(QWidget):
         self.frame_width = width
         self.frame_height = height
         
-        pixmap = QPixmap.fromImage(image)
-        self.preview_area.setPixmap(pixmap.scaled(self.preview_area.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.base_pixmap = QPixmap.fromImage(image)
+        self.preview_area.set_pixmap_size(QPoint(width, height))
         
         self.update_spinbox_limits()
-        self.validate_config()
+        self.redraw_lines()
+        
+    def update_point_from_click(self, point_idx, new_pos):
+        base_spinbox_idx = point_idx * 2
+        
+        self.coord_spinboxes[base_spinbox_idx].blockSignals(True)
+        self.coord_spinboxes[base_spinbox_idx+1].blockSignals(True)
+        
+        self.coord_spinboxes[base_spinbox_idx].setValue(new_pos.x())
+        self.coord_spinboxes[base_spinbox_idx+1].setValue(new_pos.y())
+        
+        self.coord_spinboxes[base_spinbox_idx].blockSignals(False)
+        self.coord_spinboxes[base_spinbox_idx+1].blockSignals(False)
+        
+        self.redraw_lines()
 
