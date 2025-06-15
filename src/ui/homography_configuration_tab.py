@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QGroupBox, QLabel, QFormLayout, QLineEdit, QFrame, QSpinBox
 from PySide6.QtCore import Qt, Signal, QPoint, QPointF
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QFont, QPolygonF
 
 
 class ClickableLabel(QLabel):
@@ -55,25 +55,32 @@ class HomographyConfigurationTab(QWidget):
         self.frame_height = 0
         self.base_pixmap = None
         
+        self.width_lineedit = QLineEdit("3.5")
+        self.length_lineedit = QLineEdit("10.0")
+        
         main_layout = QHBoxLayout(self)
         
         # left panel
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_panel.setFixedWidth(450)
+        config_box = QGroupBox("Calibración de Perspectiva")
+        config_form = QFormLayout(config_box)
         
-        # vertical points (reds)
-        vertical_box = QGroupBox("Puntos Verticales (Corrección de Escala)")
-        vertical_form = QFormLayout(vertical_box)
-        self._create_homography_fields(vertical_form, "V", 2)
+        self.coord_spinboxes.clear()
+        # Crear 4 campos para los puntos del rectángulo en el suelo
+        for i in range(4):
+            x_spin, y_spin, layout = self._create_coord_spinboxes()
+            config_form.addRow(f"Punto P{i+1}:", layout)
+            self.coord_spinboxes.extend([x_spin, y_spin])
+
+        # Añadir campos para las dimensiones reales del rectángulo
+        self.width_lineedit.textChanged.connect(self.validate_config)
+        self.length_lineedit.textChanged.connect(self.validate_config)
+        config_form.addRow("Ancho Real del Rectángulo (m):", self.width_lineedit)
+        config_form.addRow("Largo Real del Rectángulo (m):", self.length_lineedit)
         
-        # horizontal points (blues)
-        horizontal_box = QGroupBox("Puntos Horizontales (Corrección de Perspectiva)")
-        horizontal_form = QFormLayout(horizontal_box)
-        self._create_homography_fields(horizontal_form, "H", 2)
-        
-        left_layout.addWidget(vertical_box)
-        left_layout.addWidget(horizontal_box)
+        left_layout.addWidget(config_box)
         left_layout.addStretch()
         
         # right panel
@@ -121,13 +128,10 @@ class HomographyConfigurationTab(QWidget):
         coord_layout.addWidget(QLabel("Y:"))
         coord_layout.addWidget(y_spin)
         
-        self.coord_spinboxes.extend([x_spin, y_spin])
-        self.all_inputs.extend([x_spin, y_spin])
+        x_spin.valueChanged.connect(self.redraw_lines)
+        y_spin.valueChanged.connect(self.redraw_lines)
         
-        x_spin.valueChanged.connect(self.validate_config)
-        y_spin.valueChanged.connect(self.validate_config)
-        
-        return coord_layout
+        return x_spin, y_spin, coord_layout
     
     def get_all_points(self):
         """Get all lane points as a list of lists."""
@@ -140,42 +144,26 @@ class HomographyConfigurationTab(QWidget):
     
     def redraw_lines(self):
         if not self.base_pixmap: return
+        
+        scale_factor, line_thickness, font_size = self._get_dynamic_scale()
 
         pixmap_to_draw = self.base_pixmap.copy()
         painter = QPainter(pixmap_to_draw)
-        font = QFont()
-        font.setPointSize(14)
-        font.setBold(True)
-        painter.setFont(font)
         
-        all_points = self.get_all_points()
-        self.preview_area.set_points_data(all_points)
-
-        # 4 pares de puntos en total (8 puntos)
-        for i in range(4):
-            p1_idx = i * 2
-            p2_idx = i * 2 + 1
-            
-            p1 = all_points[p1_idx]
-            p2 = all_points[p2_idx]
-            
-            is_vertical_group = i < 2 # Los primeros 2 pares son verticales
-            color = Qt.red if is_vertical_group else Qt.blue
-            
-            pen = QPen(color, 3)
+        points = self.get_all_points()
+        self.preview_area.set_points_data(points)
+        
+        if len(points) == 4:
+            polygon = QPolygonF([QPointF(p) for p in points])
+            pen = QPen(Qt.red, line_thickness)
             painter.setPen(pen)
+            painter.drawPolygon(polygon)
+            
             painter.setBrush(Qt.white)
-            
-            # Dibujar línea y puntos
-            painter.drawLine(p1, p2)
-            painter.drawEllipse(p1, 6, 6)
-            painter.drawEllipse(p2, 6, 6)
-            
-            # Dibujar texto de distancia
-            dist_text = self.distance_lineedits[i].text() + " m"
-            mid_point = (p1 + p2) / 2
-            painter.setPen(Qt.white)
-            painter.drawText(mid_point.x() + 10, mid_point.y(), dist_text)
+            point_radius = int(6 * scale_factor)
+            for i, point in enumerate(points):
+                painter.drawEllipse(point, point_radius, point_radius)
+                painter.drawText(point.x() + 10, point.y(), f"P{i+1}")
 
         painter.end()
         self.preview_area.setPixmap(pixmap_to_draw.scaled(self.preview_area.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -219,4 +207,27 @@ class HomographyConfigurationTab(QWidget):
         self.coord_spinboxes[base_spinbox_idx+1].blockSignals(False)
         
         self.redraw_lines()
+        
+    def get_homography_data(self) -> dict:
+        """Recopila y devuelve todos los datos de configuración de homografía."""
+        points = self.get_all_points()
+        
+        if len(points) != 4: 
+            return {}
+        
+        return {
+            "image_points": [(p.x(), p.y()) for p in points],
+            "real_width_m": float(self.width_lineedit.text() or 0),
+            "real_length_m": float(self.length_lineedit.text() or 0)
+        }
+    
+    def _get_dynamic_scale(self):
+        """Calcula un factor de escala para el dibujo basado en el ancho del frame."""
+        if self.frame_width == 0:
+            return 1.0, 1, 14 # Default values
+        
+        scale_factor = self.frame_width / 1920.0  # Normalizar basado en resolución Full HD
+        line_thickness = max(1, int(3 * scale_factor))
+        font_size = max(10, int(16 * scale_factor))
+        return scale_factor, line_thickness, font_size
 

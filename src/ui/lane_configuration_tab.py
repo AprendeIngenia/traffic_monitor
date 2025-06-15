@@ -123,7 +123,7 @@ class LaneConfigurationTab(QWidget):
         
         self.update_lane_inputs(1)
         
-    def get_all_lane_points(self):
+    def get_all_lane_points(self, as_tuples=False):
         """Get all lane points as a list of lists."""
         all_points = []
         num_lanes = self.spin_num_lanes.value()
@@ -138,12 +138,17 @@ class LaneConfigurationTab(QWidget):
                     y = self.lane_spinboxes[base_idx + 1].value()
                     lane_points.append(QPoint(x, y))
             all_points.append(lane_points)
+            
+        if as_tuples:
+            return [[(p.x(), p.y()) for p in lane] for lane in all_points]
         return all_points
     
     def redraw_lanes(self):
         """Redraw lanes on the preview area based on current points."""
         if not self.base_pixmap:
             return
+        
+        line_thickness, point_radius = self._get_dynamic_scale()
         
         pixmap_to_draw = self.base_pixmap.copy()
         painter = QPainter(pixmap_to_draw)
@@ -162,11 +167,11 @@ class LaneConfigurationTab(QWidget):
                 painter.drawPolygon(polygon)
                 
                 # Dibujar los puntos de los vértices
-                pen = QPen(color.darker(150), 2)
+                pen = QPen(color.darker(150), line_thickness)
                 painter.setPen(pen)
                 painter.setBrush(Qt.white)
                 for point in lane_points:
-                    painter.drawEllipse(point, 5, 5)
+                    painter.drawEllipse(point, point_radius, point_radius)
 
         painter.end()
         self.preview_area.setPixmap(pixmap_to_draw.scaled(self.preview_area.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
@@ -250,6 +255,10 @@ class LaneConfigurationTab(QWidget):
         # redraw lanes
         self.redraw_lanes()
         
-        
-        
+    def _get_dynamic_scale(self):
+        if self.frame_width == 0: return 2, 5 # Defaults
+        scale_factor = self.frame_width / 1920.0
+        line_thickness = max(1, int(2 * scale_factor))
+        point_radius = max(3, int(5 * scale_factor))
+        return line_thickness, point_radius
         

@@ -94,6 +94,10 @@ class MainWindow(QMainWindow):
         # mainwindow -> video button
         self.configStatusChanged.connect(self.video_tab.on_config_status_changed)
         
+        # mainwindow -> metrics tab
+        self.video_tab.video_processor.analysisResult.connect(self.video_tab.on_new_analysis_data)
+        self.video_tab.video_processor.analysisResult.connect(self.metrics_tab.update_statistics)
+        
     def on_lane_config_changed(self, is_valid):
         self.is_lane_config_valid = is_valid
         self._check_overall_config()
@@ -110,3 +114,4 @@ class MainWindow(QMainWindow):
         """check all validations."""
         is_ready = self.is_lane_config_valid and self.is_homography_config_valid and self.has_video_source
         self.configStatusChanged.emit(is_ready)
+        
