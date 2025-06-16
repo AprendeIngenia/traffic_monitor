@@ -38,4 +38,4 @@ class VehicleDetection(VehicleDetectionInterface):
         
 
     def inference(self, image: np.ndarray, classes_to_detect: list[int] = None) -> tuple[list[Results], dict[int, str]]:
-        return self.vehicle_model.track(image, conf=0.3, verbose=False, persist=True, imgsz=640, stream=True, half=True, classes=classes_to_detect), self.vehicle_model.names
+        return self.vehicle_model.track(image, conf=0.10, verbose=False, persist=True, imgsz=640, stream=True, half=True, classes=classes_to_detect), self.vehicle_model.names
