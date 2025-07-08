@@ -177,7 +177,7 @@ class VideoProcessor(QThread):
         classes_to_detect = [1, 2, 3, 5, 7]  # Car, Motorcycle, Bus, Truck
         
         # draw
-        scale_factor = frame_width / 2560.0  # Normalizar basado en Full HD
+        scale_factor = frame_width / 2560.0
         line_thickness = max(1, int(3 * scale_factor))
         font_scale = max(0.4, 0.7 * scale_factor)
         
