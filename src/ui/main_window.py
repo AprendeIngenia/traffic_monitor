@@ -7,6 +7,7 @@ from .lane_configuration_tab import LaneConfigurationTab
 from .homography_configuration_tab import HomographyConfigurationTab
 from .metrics_tab import MetricsTab
 
+
 class MainWindow(QMainWindow):
     configStatusChanged = Signal(bool)
     
