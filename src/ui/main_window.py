@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget, QStatusBar
+from PySide6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget, QStatusBar, QLabel
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Signal
 
@@ -77,6 +77,9 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Listo")
         
+        self.fps_label = QLabel("FPS: --")
+        self.status_bar.addPermanentWidget(self.fps_label)
+        
     def setup_connections(self):
         """connect al signals with slots"""
         # lanes_config_tab -> metrics_tab
@@ -99,6 +102,9 @@ class MainWindow(QMainWindow):
         self.video_tab.video_processor.analysisResult.connect(self.video_tab.on_new_analysis_data)
         self.video_tab.video_processor.analysisResult.connect(self.metrics_tab.update_statistics)
         
+        # fps update
+        self.video_tab.video_processor.fpsUpdated.connect(self.update_status_bar_fps)
+        
     def on_lane_config_changed(self, is_valid):
         self.is_lane_config_valid = is_valid
         self._check_overall_config()
@@ -115,4 +121,8 @@ class MainWindow(QMainWindow):
         """check all validations."""
         is_ready = self.is_lane_config_valid and self.is_homography_config_valid and self.has_video_source
         self.configStatusChanged.emit(is_ready)
+        
+    def update_status_bar_fps(self, fps):
+        """update FPS label in status bar."""
+        self.fps_label.setText(f"FPS: {fps:.2f}")
         
