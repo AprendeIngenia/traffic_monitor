@@ -6,11 +6,12 @@ import logging as log
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from .vehicle_detector import VehicleDetection
 from .counting_processor import CountingProcessor
 from .homography_manager import HomographyManager
 from .speed_calculator import SpeedCalculator
 from .mask_processor import MaskProcessing
+
+from .detector_factory import get_detector
 
 log.basicConfig(level=log.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -19,6 +20,7 @@ class VideoProcessor(QThread):
     frameReady = Signal(QImage)
     analysisResult = Signal(dict)
     finished = Signal()
+    fpsUpdated = Signal(float)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,7 +31,7 @@ class VideoProcessor(QThread):
         
         # Colores para carriles (mismo que en LaneConfigurationTab)
         self.lane_colors = [
-            (82, 82, 255),    # Rojo (BGR format for OpenCV)
+            (82, 82, 255),    # Rojo
             (219, 152, 52),   # Azul  
             (113, 204, 46),   # Verde
             (15, 196, 241),   # Amarillo
@@ -168,7 +170,7 @@ class VideoProcessor(QThread):
             return
         
         mask = MaskProcessing()
-        detector = VehicleDetection()
+        detector = get_detector(use_tensorrt=True)
         counter = CountingProcessor(self.lane_config)
         homography_manager = HomographyManager(self.homography_config)
         speed_calculator = SpeedCalculator(homography_manager)
@@ -193,6 +195,10 @@ class VideoProcessor(QThread):
             current_time = time.time()
             delta_t = current_time - prev_time
             prev_time = current_time
+            
+            if delta_t > 0:
+                fps = 1.0 / delta_t
+                self.fpsUpdated.emit(fps)
             
             # 1. create mask
             masked_frame = mask.process_frame(frame, counter.lane_polygons)
