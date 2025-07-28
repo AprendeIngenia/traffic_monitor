@@ -1,5 +1,6 @@
 import os
 import sys
+import cv2
 import numpy as np
 from datetime import datetime
 from collections import defaultdict
@@ -21,15 +22,15 @@ class CountingProcessor:
         self.lane_polygons = [np.array(p, dtype=np.int32) for p in lane_polygons]
         self.counting_lines = [self._calculate_counting_line(p) for p in self.lane_polygons]
         
-        # Historial para la lógica de cruce de línea
+        # history
         self.track_history = defaultdict(list)
         
-        # Almacenamiento persistente de datos de la sesión
+        # save data
         self.full_event_log = []
         self.speeds_per_lane = defaultdict(list)
         self.vehicle_counts_per_lane = defaultdict(lambda: defaultdict(int))
         
-        self.counted_ids_per_lane = defaultdict(list)
+        self.globally_counted_ids = set()
         
     def _calculate_counting_line(self, polygon: np.ndarray) -> LineString:
         """
@@ -42,24 +43,12 @@ class CountingProcessor:
             A LineString object representing the counting line.
         """
         if len(polygon) < 2:
-            raise ValueError("Polygon must have at least two points to form a line.")
-        
-        # ordenate points to find the start and end points
-        sorted_by_y = sorted(polygon, key=lambda p: p[1])
-        top_points = sorted(sorted_by_y[:2], key=lambda p: p[0])
-        bottom_points = sorted(sorted_by_y[2:], key=lambda p: p[0])
-        
-        # mid point
-        mid_top = ((top_points[0][0] + top_points[1][0]) / 2, (top_points[0][1] + top_points[1][1]) / 2)
-        mid_bottom = ((bottom_points[0][0] + bottom_points[1][0]) / 2, (bottom_points[0][1] + bottom_points[1][1]) / 2)
-        
-        # mid line un Y axis
-        line_y = (mid_top[1] + mid_bottom[1]) / 3
-        
-        # counting line
-        x_coords = [p[0] for p in polygon]
-        
-        return LineString([(min(x_coords), line_y), (max(x_coords), line_y)])
+            return None
+
+        y_coords = polygon[:, 1]
+        line_y = np.min(y_coords) + (np.max(y_coords) - np.min(y_coords)) / 3
+        x_coords = polygon[:, 0]
+        return LineString([(np.min(x_coords), line_y), (np.max(x_coords), line_y)])
     
     def process_frame(self, detections, class_names: dict, speed_history: dict):
         """
@@ -76,47 +65,63 @@ class CountingProcessor:
         confs = detections.boxes.conf.cpu().tolist()
         
         for box, track_id, cls_id, conf in zip(boxes, track_ids, clss, confs):
-            self.track_history[track_id].append(((box[0] + box[2]) / 2, box[3]))
+            current_point = ((box[0] + box[2]) / 2, box[3])
+
+            self.track_history[track_id].append(current_point)
             if len(self.track_history[track_id]) > 2:
                 self.track_history[track_id].pop(0)
-                
-            if len(self.track_history[track_id]) == 2:
-                trajectory = LineString(self.track_history[track_id])
-                for i, line in enumerate(self.counting_lines):
-                    if trajectory.intersects(line) and track_id not in self.counted_ids_per_lane[i]:
-                        self.counted_ids_per_lane[i].append(track_id)
-                        
+
+            if len(self.track_history[track_id]) < 2 or track_id in self.globally_counted_ids:
+                continue
+
+            # 1. Determinar en qué carril está el vehículo
+            for i, polygon in enumerate(self.lane_polygons):
+                # Usamos pointPolygonTest para ver si el punto está dentro del polígono del carril
+                if cv2.pointPolygonTest(polygon, current_point, False) >= 0:
+
+                    # 2. check LANE
+                    trajectory = LineString(self.track_history[track_id])
+                    counting_line = self.counting_lines[i]
+
+                    if trajectory.intersects(counting_line):
+                        self.globally_counted_ids.add(track_id)
+
                         speed = speed_history.get(track_id, 0)
                         if speed <= 0: continue
 
-                        if speed > 60: status = "Exceso de Velocidad"
-                        elif speed < 40: status = "Lento"
-                        else: status = "Normal"
-                        
+                        if speed > 60:
+                            status = "Exceso de Velocidad"
+                        elif speed < 40:
+                            status = "Lento"
+                        else:
+                            status = "Normal"
+
                         event = {
                             "track_id": track_id,
                             "timestamp": datetime.now().strftime('%H:%M:%S'),
-                            "lane": i + 1,
+                            "lane": i + 1,  # El carril correcto
                             "type": class_names.get(cls_id, "Desconocido"),
                             "speed": f"{speed:.1f}",
-                            "confidence": f"{conf*100:.0f}%",
+                            "confidence": f"{conf * 100:.0f}%",
                             "status": status
                         }
                         self.full_event_log.append(event)
                         newly_counted_events.append(event)
-                        
+
                         self.speeds_per_lane[i].append(speed)
                         self.vehicle_counts_per_lane[i][event["type"]] += 1
-                        
+                        break
+
         return newly_counted_events
     
     def get_statistics(self) -> dict:
         """Calcula y devuelve todas las estadísticas acumuladas."""
         stats = { "lanes": {}, "global": {}, "log_preview": [] }
         
-        # Estadísticas por carril
+        # stats per lane
         for lane_idx, speeds in self.speeds_per_lane.items():
-            if not speeds: continue
+            if not speeds:
+                continue
             stats["lanes"][lane_idx] = {
                 "avg_speed": np.mean(speeds),
                 "min_speed": min(speeds),
@@ -129,7 +134,7 @@ class CountingProcessor:
                 }
             }
         
-        # Estadísticas globales
+        # global stats
         all_speeds = [s for speeds in self.speeds_per_lane.values() for s in speeds]
         stats["global"]["avg_speed"] = np.mean(all_speeds) if all_speeds else 0
         
@@ -138,9 +143,6 @@ class CountingProcessor:
             for v_type, count in counts.items():
                 global_counts[v_type] += count
         stats["global"]["vehicle_counts"] = global_counts
-        
-        # Vista previa del log para el CSV
-        stats["log_preview"] = self.full_event_log[-5:] # Últimos 5 eventos
-        
+        stats["log_preview"] = self.full_event_log[-5:]
         return stats
     
